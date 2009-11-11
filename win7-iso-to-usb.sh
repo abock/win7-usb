@@ -180,6 +180,10 @@ fi
 # From here on we will just bail if something fails
 set -e
 
+# Zero out the MBR
+echo "Zeroing out the MBR..."
+dd if=/dev/zero of=$device_file bs=512 count=1 conv=notrunc &>/dev/null
+
 # Partition the USB key with a bootable NTFS
 # partition that consumes the entire disk
 echo "Creating partitions on $device_file..."
