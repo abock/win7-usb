@@ -6,30 +6,31 @@
 # Licensed under the MIT/X11 license
 #
 
-if test $UID -ne 0; then
-	echo "You must be root to run this tool."
-	exit 1
-fi
+function usage {
+	echo "Written by Aaron Bockover <aaron@abock.org>."
+	echo "Copyright 2009 Aaron Bockover"
+	echo "Licensed under the MIT/X11 license"
+	echo
+	echo "Usage: $0 ISO [TARGET DEVICE]"
+	echo
+	echo "    ISO             Path to the Windows 7 ISO file"
+	echo
+	echo "    TARGET DEVICE   Target USB block device node. This argument"
+	echo "                    is optional if devkit-disks is installed."
+	echo
+	echo "                    Omitting this argument will present a list"
+	echo "                    of available target USB block devices."
+	echo
+}
 
 function check-program {
 	full_path="$(which "$1" 2>/dev/null)"
 	if ! test -x "$full_path"; then
+		usage
 		echo "You must have $1 installed and in your PATH."
+		exit 1
 	fi
 }
-
-check-program ntfs-3g
-check-program sfdisk
-check-program devkit-disks
-check-program mount
-check-program umount
-check-program mkntfs
-
-iso_path="$1"
-if ! test -f "$iso_path"; then
-	echo "You must specify a path to the Windows 7 ISO."
-	exit 1
-fi
 
 function dk-enum-device-files {
 	devkit-disks --dump | grep device-file: | cut -f2 -d:
@@ -51,68 +52,111 @@ function dk-id-for-device-file {
 	devkit-disks --show-info $1 | head -n1 | awk -F' ' '{print $NF}'
 }
 
-declare -a devices=()
-device_count=0
+function select-target-device {
+	declare -a devices=()
+	device_count=0
 
-echo Select a target USB device:
-echo
+	echo Select a target USB device:
+	echo
 
-for device in $(dk-enum-device-files); do
-	if dk-compare-device-field $device removable -eq 1 && \
-		dk-compare-device-field $device interface = usb; then
+	for device in $(dk-enum-device-files); do
+		if dk-compare-device-field $device removable -eq 1 && \
+			dk-compare-device-field $device interface = usb; then
 
-		devkit_id=$(dk-id-for-device-file $device)
-		display_name=$(dk-get-device-field $device model)
+			devkit_id=$(dk-id-for-device-file $device)
+			display_name=$(dk-get-device-field $device model)
 
-		echo " 1) $display_name [$device]"
+			echo " 1) $display_name [$device]"
 
-		devices[$device_count]="$device:"
-		for child_device in $(dk-enum-device-files); do
-			if dk-compare-device-field $child_device \
-				"part of" = $devkit_id && \
-				dk-compare-device-field $child_device "is mounted" -eq 1; then
-				mount_path=$(dk-get-device-field $child_device "mount paths")
-				devices[$device_count]="${devices[$device_count]}$child_device "
-				echo "    $child_device mounted at $mount_path"
+			devices[$device_count]="$device:"
+			for child_device in $(dk-enum-device-files); do
+				if dk-compare-device-field $child_device \
+					"part of" = $devkit_id && \
+					dk-compare-device-field $child_device "is mounted" -eq 1; then
+					mount_path=$(dk-get-device-field $child_device "mount paths")
+					devices[$device_count]="${devices[$device_count]}$child_device "
+					echo "    $child_device mounted at $mount_path"
+				fi
+			done
+
+			let device_count++
+		fi
+	done
+
+	if test $device_count -eq 0; then
+		echo "  No available devices"
+		exit 0
+	fi
+
+	echo ; read -p "Device number (1): " device_index ; echo
+	test -z $device_index && device_index=1
+	let device_index--
+	if test $device_index -lt 0 || test $device_index -ge $device_count; then
+		echo Invalid device selection.
+		exit 1
+	fi
+
+	device="${devices[$device_index]}"
+	device_file="$(echo "$device" | cut -f1 -d:)"
+	device_mounts="$(echo "$device" | cut -f2 -d:)"
+
+	if ! test -z "$device_mounts"; then
+		echo "Device $device_file has mounted partitions."
+		read -p "Unmount all partitions on $device_file? [Y/N]: " unmount_device
+		case "$unmount_device" in
+			Y|y) ;;
+			N|n) echo "Cannot continue with mounted partitions."; exit 1 ;;
+			*) echo "Invalid choice."; exit 1 ;;
+		esac
+		for mount in $device_mounts; do
+			echo "Unmounting $mount..."
+			if ! umount $mount; then
+				echo "Failed to unmount $mount"
+				exit 1
 			fi
 		done
-
-		let device_count++
 	fi
-done
+}
 
-if test $device_count -eq 0; then
-	echo "  No available devices"
-	exit 0
-fi
-
-echo ; read -p "Device number (1): " device_index ; echo
-test -z $device_index && device_index=1
-let device_index--
-if test $device_index -lt 0 || test $device_index -ge $device_count; then
-	echo Invalid device selection.
+if test $# -le 0; then
+	usage
 	exit 1
 fi
 
-device="${devices[$device_index]}"
-device_file="$(echo "$device" | cut -f1 -d:)"
-device_mounts="$(echo "$device" | cut -f2 -d:)"
+if test $UID -ne 0; then
+	usage
+	echo "You must be root to run this tool."
+	exit 1
+fi
 
-if ! test -z "$device_mounts"; then
-	echo "Device $device_file has mounted partitions."
-	read -p "Unmount all partitions on $device_file? [Y/N]: " unmount_device
-	case "$unmount_device" in
-		Y|y) ;;
-		N|n) echo "Cannot continue with mounted partitions."; exit 1 ;;
-		*) echo "Invalid choice."; exit 1 ;;
-	esac
-	for mount in $device_mounts; do
-		echo "Unmounting $mount..."
-		if ! umount $mount; then
-			echo "Failed to unmount $mount"
-			exit 1
-		fi
-	done
+check-program ntfs-3g
+check-program sfdisk
+check-program mount
+check-program umount
+check-program mkntfs
+
+iso_path="$1"
+if ! test -f "$iso_path"; then
+	usage
+	echo "You must specify a path to the Windows 7 ISO."
+	exit 1
+fi
+
+if test -e "$2"; then
+	device_file=$2
+else
+	if test -x $(which devkit-disks 2>/dev/null); then
+		select-target-device
+	else
+		usage
+		echo You do not have devkit-disks installed. Without this tool
+		echo the target device must be specified as the second argument
+		echo to this script.
+		echo
+		echo Ensure there are no mounted partitions on the device first.
+		echo
+		exit 1
+	fi
 fi
 
 ## Windows 7 Installation ##
